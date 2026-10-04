@@ -72,9 +72,101 @@ Other entry points:
 .venv/bin/python scripts/run_eval.py      # full evaluation suite (history search planner booking)
 .venv/bin/python -m pytest tests          # deterministic unit tests (no Ollama needed)
 ```
-Models and paths can be changed with environment variables: `HCA_LLM_MODEL`, `HCA_EVAL_MODEL`, `HCA_EMBED_MODEL`,
-`OLLAMA_BASE_URL`, `HCA_STATE_DIR` (see `hca/config.py`). Use `HCA_EVAL_MODEL=qwen2.5:7b` for a faster but less
-reliable grader.
+To use different models, see [Using other models](#using-other-models).
+
+## Using other models
+
+### Other Ollama models (no code changes)
+
+Every model is chosen through an environment variable (defaults are in `hca/config.py`):
+
+| Variable | Default | Used for |
+|---|---|---|
+| `HCA_LLM_MODEL` | `qwen2.5:7b` | agent: planner, history summaries, note structuring, search answers |
+| `HCA_EVAL_MODEL` | `gemma4:12b` | QAEvalChain grader (evaluation only) |
+| `HCA_EMBED_MODEL` | `nomic-embed-text` | embeddings for the FAISS patient memory and medical knowledge base |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server (can be a remote GPU machine) |
+| `HCA_STATE_DIR` | `./state` | where the SQLite DB and FAISS indexes are stored |
+
+```bash
+ollama pull llama3.1                                   # 1. pull the model
+HCA_LLM_MODEL=llama3.1 ./run.sh                        # 2. start the dashboard with it
+HCA_LLM_MODEL=llama3.1 .venv/bin/python scripts/demo.py
+```
+
+Or set it once for the whole terminal session:
+```bash
+export HCA_LLM_MODEL=llama3.1 HCA_EVAL_MODEL=gemma4:12b
+./run.sh
+```
+
+The sidebar shows the active models and warns if one has not been pulled. Models are read at startup, so restart
+the app after changing a variable.
+
+**Changing the embedding model requires a rebuild.** A FAISS index only works with the model that created it, so
+reseed after switching (about 1 minute). A separate `HCA_STATE_DIR` keeps the old index intact:
+```bash
+ollama pull mxbai-embed-large
+HCA_EMBED_MODEL=mxbai-embed-large HCA_STATE_DIR=state-mxbai .venv/bin/python scripts/seed.py
+HCA_EMBED_MODEL=mxbai-embed-large HCA_STATE_DIR=state-mxbai ./run.sh
+```
+Chat and grader models need no rebuild.
+
+### Choosing a model
+
+- **The agent model must produce reliable structured (JSON) output.** The planner, history summaries and note
+  structuring require output matching a fixed format. Plan-checking code and a keyword fallback catch some mistakes,
+  but models below about 7B parameters produce noticeably worse plans. 7B–14B instruction-tuned models are the
+  practical range on a 16 GB machine.
+- **Keep the grader different from the agent model**, and ideally stronger. A model grading its own answers is biased:
+  with `qwen2.5:7b` grading itself, a correct summary was marked wrong. The grader controls in each evaluation run
+  show whether a grader can be trusted (one known-correct and one known-wrong answer).
+- **Memory:** agent and grader models are loaded one after the other during evaluation, not at the same time. The
+  defaults use about 5 GB and 8 GB.
+- **Context size** is fixed at 8,192 tokens in `hca/llm.py` (`num_ctx`). Increase it there for long patient histories,
+  if the model supports it.
+- **Tested combination:** `qwen2.5:7b` (agent) + `gemma4:12b` (grader) + `nomic-embed-text`. Other models use the same
+  interface but have not been evaluated, so run the evaluation suite before relying on one.
+
+### Comparing models
+
+Use the evaluation suite to measure a model before switching to it:
+```bash
+HCA_LLM_MODEL=qwen2.5:7b .venv/bin/python scripts/run_eval.py
+HCA_LLM_MODEL=llama3.1   .venv/bin/python scripts/run_eval.py
+HCA_LLM_MODEL=mistral:7b .venv/bin/python scripts/run_eval.py planner search   # selected modules only
+```
+Each run records its agent and grader model. The **📊 Evaluation** page lists runs by model and charts every metric
+across runs.
+
+### Cloud providers (OpenAI, Anthropic, ...)
+
+All model creation lives in `hca/llm.py`, so switching provider only changes that file. Any LangChain chat model
+that supports `with_structured_output` works. Example for Claude:
+
+```bash
+uv pip install --python .venv/bin/python langchain-anthropic
+export ANTHROPIC_API_KEY=...
+```
+```python
+# hca/llm.py — replace the body of get_llm()
+from langchain_anthropic import ChatAnthropic
+
+@lru_cache(maxsize=8)
+def get_llm(temperature: float = 0.0, model: str | None = None, num_ctx: int = 8192):
+    return ChatAnthropic(model=model or config.LLM_MODEL, temperature=temperature, max_tokens=4096)
+```
+```bash
+HCA_LLM_MODEL=claude-sonnet-5-5 HCA_EVAL_MODEL=claude-opus-5-5 ./run.sh
+```
+For OpenAI, use `langchain-openai` and `ChatOpenAI(model=..., temperature=...)` in the same place.
+
+Notes for cloud models:
+- **Embeddings can stay on Ollama** (`get_embeddings()` is separate). If you change them to a cloud embedding model,
+  reseed as described above.
+- The sidebar's Ollama check reports cloud model names as "missing". This is harmless and can be ignored.
+- **Privacy:** with a cloud model, patient records, notes and queries are sent to that provider's API. The default
+  all-local setup keeps them on your machine.
 
 ## Dashboard pages
 
