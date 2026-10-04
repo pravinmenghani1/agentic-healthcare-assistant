@@ -1,0 +1,13 @@
+# environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# generated local state (SQLite DB + FAISS indexes) — rebuild with scripts/seed.py
+state/
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+.ipynb_checkpoints/
